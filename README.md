@@ -15,8 +15,9 @@ Ed25519, SHA-256/384/512. Signing, encryption and v6 are not supported.
 See `SPEC.md` for the exact gpgme surface and `PROVENANCE.md` for copied
 headers. Licence: LGPL-2.1-or-later (`COPYING`).
 
-**Status: work in progress.** A security review (2026-10-04) found issues
-being fixed: signing-subkey revocation handling, primary/subkey key material
-separation, missing embedded back-signature (0x19) check, RSA signature
-left-padding, primary-key expiry for subkey signatures, and extra signature
-sanity checks. Do not rely on this snapshot as a trust root.
+**Status: work in progress.** The 2026-10-04 security review findings are
+fixed with regression tests (`tests/security-regressions.sh`): signing-subkey
+revocation, primary/subkey material separation, embedded back-signature
+(0x19) requirement, RSA signature left-padding, primary-key expiry/revocation
+for subkey signatures, and signature sanity checks. Fuzz targets live in
+`tests/` (libFuzzer + ASan/UBSan).

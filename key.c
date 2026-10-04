@@ -126,38 +126,48 @@ static int signature_key_metadata(CBS body, uint8_t *sig_type,
 static int embedded_primary_binding(CBS signature, CBS *embedded)
 {
 	uint8_t version, type, algorithm, hash_algorithm;
-	uint16_t hashed_len;
+	uint16_t hashed_len, unhashed_len;
 	CBS hashed;
+	CBS unhashed;
+	CBS *sets[2];
+	size_t i;
 
 	if (!CBS_get_u8(&signature, &version) || version != 4 ||
 	    !CBS_get_u8(&signature, &type) || type != 0x18 ||
 	    !CBS_get_u8(&signature, &algorithm) ||
 	    !CBS_get_u8(&signature, &hash_algorithm) ||
 	    !CBS_get_u16(&signature, &hashed_len) ||
-	    !CBS_get_bytes(&signature, &hashed, hashed_len))
+	    !CBS_get_bytes(&signature, &hashed, hashed_len) ||
+	    !CBS_get_u16(&signature, &unhashed_len) ||
+	    !CBS_get_bytes(&signature, &unhashed, unhashed_len))
 		return 0;
-	while (CBS_len(&hashed)) {
+	sets[0] = &hashed;
+	sets[1] = &unhashed;
+	for (i = 0; i < 2; i++) {
+		CBS *set = sets[i];
+		while (CBS_len(set)) {
 		uint32_t length;
 		uint8_t first, raw_type;
 		CBS item;
 
-		if (!CBS_get_u8(&hashed, &first))
+		if (!CBS_get_u8(set, &first))
 			return 0;
 		if (first < 192)
 			length = first;
 		else if (first < 255) {
 			uint8_t second;
-			if (!CBS_get_u8(&hashed, &second))
+			if (!CBS_get_u8(set, &second))
 				return 0;
 			length = ((uint32_t)(first - 192) << 8) + second + 192;
-		} else if (!CBS_get_u32(&hashed, &length))
+		} else if (!CBS_get_u32(set, &length))
 			return 0;
-		if (length == 0 || !CBS_get_u8(&hashed, &raw_type) ||
-		    !CBS_get_bytes(&hashed, &item, length - 1))
+		if (length == 0 || !CBS_get_u8(set, &raw_type) ||
+		    !CBS_get_bytes(set, &item, length - 1))
 			return 0;
 		if ((raw_type & 0x7f) == 32) {
 			*embedded = item;
 			return 1;
+		}
 		}
 	}
 	(void)algorithm;
@@ -234,7 +244,7 @@ static int verify_key_signature(struct gl_key *key, CBS signature,
 		return 0;
 	md = key_digest(hash_algorithm);
 	if (!md || public_algorithm != (signer ? signer_algorithm :
-						 key->key_algorithm) ||
+						key->key_algorithm) ||
 	    (public_algorithm != 1 && public_algorithm != 3 &&
 		    public_algorithm != 22))
 		return 0;
@@ -315,6 +325,7 @@ static int verify_key_signature(struct gl_key *key, CBS signature,
 		BIGNUM *n = NULL;
 		BIGNUM *e = NULL;
 		RSA *rsa = NULL;
+		unsigned char *padded = NULL;
 		CBS mpi;
 
 		CBS_init(&primary, signer ? signer : key->primary_body,
@@ -340,10 +351,18 @@ static int verify_key_signature(struct gl_key *key, CBS signature,
 			goto done;
 		}
 		rsa = RSA_new_public_key(n, e);
-		if (rsa)
-			valid = RSA_verify(EVP_MD_type(md), digest, digest_len,
-					   CBS_data(&mpi), (unsigned int)CBS_len(&mpi),
-					   rsa);
+		if (rsa && CBS_len(&mpi) <= (size_t)RSA_size(rsa)) {
+			padded = OPENSSL_malloc((size_t)RSA_size(rsa));
+			if (padded) {
+				memset(padded, 0, (size_t)RSA_size(rsa) - CBS_len(&mpi));
+				memcpy(padded + RSA_size(rsa) - CBS_len(&mpi),
+				       CBS_data(&mpi), CBS_len(&mpi));
+				valid = RSA_verify(EVP_MD_type(md), digest, digest_len,
+						   padded, (unsigned int)RSA_size(rsa),
+						   rsa);
+			}
+		}
+		OPENSSL_free(padded);
 		RSA_free(rsa);
 		BN_free(n);
 		BN_free(e);
@@ -650,17 +669,20 @@ gpgme_error_t gl_parse_key(const unsigned char *data, size_t len,
 			key->pending_subkey_ed25519 = temporary.ed25519;
 			memcpy(key->pending_subkey_public_key, temporary.public_key,
 			       sizeof(key->pending_subkey_public_key));
+			key->pending_subkey_revoked = 0;
 		} else if (packet.tag == 2 && have_primary) {
 			uint8_t sig_type = 0;
 			uint8_t key_flags = 0;
 			uint32_t key_expire = 0;
 			int valid_signature;
 			int valid_embedded = 0;
+			const char *revoked_fpr = key->pending_subkey_fpr;
 
 			/* RFC 9580 sections 5.2.1.4-5.2.1.8, 5.2.1.11-5.2.1.13. */
 			if (!signature_key_metadata(body, &sig_type, &key_flags,
-						    &key_expire))
+						    &key_expire)) {
 				goto malformed;
+			}
 			valid_signature = verify_key_signature(
 				key, body,
 				(sig_type >= 0x10 && sig_type <= 0x13) ? current_uid : NULL,
@@ -672,6 +694,22 @@ gpgme_error_t gl_parse_key(const unsigned char *data, size_t len,
 				key->pending_subkey_len : 0,
 				NULL, 0, key->key_algorithm, key->ed25519,
 				key->public_key);
+			if (sig_type == 0x28 && !valid_signature) {
+				struct gl_signer *candidate;
+
+				for (candidate = key->signers; candidate;
+				     candidate = candidate->next) {
+					valid_signature = verify_key_signature(
+						key, body, NULL, 0, candidate->body,
+						candidate->body_len, NULL, 0,
+						key->key_algorithm, key->ed25519,
+						key->public_key);
+					if (valid_signature) {
+						revoked_fpr = candidate->fpr;
+						break;
+					}
+				}
+			}
 			if (valid_signature && sig_type == 0x18 &&
 			    (key_flags & 0x02) && key->pending_subkey_body) {
 				CBS embedded;
@@ -687,18 +725,22 @@ gpgme_error_t gl_parse_key(const unsigned char *data, size_t len,
 						key->pending_subkey_ed25519,
 						key->pending_subkey_public_key);
 			}
-			if (!valid_signature)
+			if (!valid_signature) {
 				continue;
+			}
 			if (sig_type == 0x20) {
 				key->pub.revoked = 1;
 			} else if (sig_type == 0x28) {
 				gpgme_subkey_t subkey;
 
+				if (revoked_fpr && key->pending_subkey_fpr &&
+				    strcmp(revoked_fpr, key->pending_subkey_fpr) == 0)
+					key->pending_subkey_revoked = 1;
+
 				for (subkey = key->pub.subkeys; subkey;
 				     subkey = subkey->next) {
-					if (subkey->fpr && key->pending_subkey_fpr &&
-					    strcmp(subkey->fpr,
-						   key->pending_subkey_fpr) == 0)
+					if (subkey->fpr && revoked_fpr &&
+					    strcmp(subkey->fpr, revoked_fpr) == 0)
 						subkey->revoked = 1;
 				}
 				{
@@ -706,8 +748,8 @@ gpgme_error_t gl_parse_key(const unsigned char *data, size_t len,
 
 					for (signer = key->signers; signer;
 					     signer = signer->next) {
-						if (strcmp(signer->fpr,
-							   key->pending_subkey_fpr) == 0)
+						if (revoked_fpr &&
+						    strcmp(signer->fpr, revoked_fpr) == 0)
 							signer->revoked = 1;
 					}
 				}
@@ -735,6 +777,7 @@ gpgme_error_t gl_parse_key(const unsigned char *data, size_t len,
 					goto nomem;
 				subkey->fpr = gl_strdup(key->pending_subkey_fpr);
 				subkey->keyid = gl_strdup(key->pending_subkey_fpr + 24);
+				subkey->revoked = key->pending_subkey_revoked;
 				subkey->can_sign = (key_flags & 0x02) != 0 && valid_embedded;
 				subkey->can_encrypt = (key_flags & 0x0c) != 0;
 				subkey->pubkey_algo = key->pending_subkey_algorithm == 22 ?
@@ -773,6 +816,7 @@ gpgme_error_t gl_parse_key(const unsigned char *data, size_t len,
 					signer->body_len = key->pending_subkey_len;
 					signer->algorithm = key->pending_subkey_algorithm;
 					signer->ed25519 = key->pending_subkey_ed25519;
+					signer->revoked = key->pending_subkey_revoked;
 					signer->expires_at = (uint32_t)subkey->expires;
 					memcpy(signer->public_key,
 					       key->pending_subkey_public_key,

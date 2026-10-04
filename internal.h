@@ -58,6 +58,7 @@ struct gl_key {
 	uint32_t pending_subkey_created;
 	uint8_t pending_subkey_algorithm;
 	int pending_subkey_ed25519;
+	int pending_subkey_revoked;
 	unsigned char pending_subkey_public_key[32];
 	uint8_t key_algorithm;
 	uint8_t sig_algorithm;

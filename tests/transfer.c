@@ -15,7 +15,8 @@ static gpgme_data_t open_data(const char *path)
 	return data;
 }
 
-static int verify_flathub(gpgme_ctx_t ctx, const char *vectors)
+static int verify_flathub(gpgme_ctx_t ctx, const char *vectors,
+			  const char *scratch)
 {
 	char path[4096];
 	gpgme_data_t signature;
@@ -23,7 +24,7 @@ static int verify_flathub(gpgme_ctx_t ctx, const char *vectors)
 	gpgme_error_t error;
 	gpgme_signature_t result;
 
-	if (snprintf(path, sizeof(path), "%s/summary.gpgsig", vectors) >=
+	if (snprintf(path, sizeof(path), "%s/summary.gpgsig", scratch) >=
 	    (int)sizeof(path))
 		return 0;
 	signature = open_data(path);
@@ -82,14 +83,14 @@ int main(int argc, char **argv)
 	    gpgme_ctx_set_engine_info(destination, GPGME_PROTOCOL_OpenPGP, NULL,
 				      path) ||
 	    gpgme_op_import(destination, exported) ||
-	    !verify_flathub(destination, argv[1]))
+	    !verify_flathub(destination, argv[1], argv[2]))
 		goto out;
 	if (gpgme_new(&reopened) ||
 	    snprintf(path, sizeof(path), "%s/destination", argv[2]) >=
 		(int)sizeof(path) ||
 	    gpgme_ctx_set_engine_info(reopened, GPGME_PROTOCOL_OpenPGP, NULL,
 				      path) ||
-	    !verify_flathub(reopened, argv[1]))
+	    !verify_flathub(reopened, argv[1], argv[2]))
 		goto out;
 	fprintf(stderr, "export/import/persistent keyring: GOOD\n");
 	exit_status = 0;

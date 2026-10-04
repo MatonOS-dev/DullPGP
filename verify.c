@@ -139,7 +139,6 @@ static int rsa_verify(struct gl_key *key, CBS signature, const EVP_MD *md,
 	uint8_t algorithm;
 	uint16_t bits;
 	CBS bytes;
-	CBS sig_bytes;
 	unsigned char *padded = NULL;
 	int ok = 0;
 
@@ -164,7 +163,6 @@ static int rsa_verify(struct gl_key *key, CBS signature, const EVP_MD *md,
 	sig = BN_bin2bn(CBS_data(&bytes), (int)CBS_len(&bytes), NULL);
 	if (!sig || CBS_len(&signature) != 0)
 		goto done;
-	CBS_init(&sig_bytes, sig_data, sig_len);
 	rsa = RSA_new_public_key(n, e);
 	if (!rsa)
 		goto done;
@@ -284,6 +282,7 @@ gpgme_error_t gl_verify_signature(gpgme_ctx_t ctx, const unsigned char *sig,
 	struct gl_key signing_view;
 	size_t i;
 	int cryptographic = 0;
+	uint32_t signing_created = 0;
 	int hash_prefix_valid = 0;
 
 	CBS_init(&input, sig, sig_len);
@@ -404,12 +403,26 @@ gpgme_error_t gl_verify_signature(gpgme_ctx_t ctx, const unsigned char *sig,
 		signing_view.signing_expires_at = 0;
 		signing_view.signing_revoked = 0;
 	}
+	{
+		CBS public_body;
+		uint8_t key_version, key_algorithm;
+		uint32_t key_created;
+		const unsigned char *body = selected_signer ?
+			selected_signer->body : selected->primary_body;
+		size_t body_len = selected_signer ?
+			selected_signer->body_len : selected->primary_len;
 
-	if (!hash_prefix_valid || !has_created ||
-	    pubkey_algorithm != signing_view.key_algorithm &&
-	    !((pubkey_algorithm == 1 || pubkey_algorithm == 3) &&
-	      (signing_view.key_algorithm == 1 ||
-	       signing_view.key_algorithm == 3))) {
+		CBS_init(&public_body, body, body_len);
+		if (!CBS_get_u8(&public_body, &key_version) || key_version != 4 ||
+		    !CBS_get_u32(&public_body, &key_created) ||
+		    !CBS_get_u8(&public_body, &key_algorithm))
+			signing_created = UINT32_MAX;
+		else
+			signing_created = key_created;
+	}
+
+	if (!hash_prefix_valid || !has_created || created < signing_created ||
+	    pubkey_algorithm != signing_view.key_algorithm) {
 		cryptographic = 0;
 	} else if (signing_view.ed25519) {
 		unsigned char ed_signature[64];
@@ -456,11 +469,11 @@ gpgme_error_t gl_verify_signature(gpgme_ctx_t ctx, const unsigned char *sig,
 		result->summary = GPGME_SIGSUM_KEY_REVOKED;
 		result->status = gl_err(GPG_ERR_CERT_REVOKED);
 	} else if ((selected_signer && signing_view.expires_at &&
-		   signing_view.expires_at < (uint32_t)time(NULL)) ||
-		  (selected_signer ? signing_view.signing_expires_at :
-		    signing_view.expires_at) &&
-		   (selected_signer ? signing_view.signing_expires_at :
-		    signing_view.expires_at) < (uint32_t)time(NULL)) {
+		    signing_view.expires_at < (uint32_t)time(NULL)) ||
+		   ((selected_signer ? signing_view.signing_expires_at :
+		     signing_view.expires_at) &&
+		    (selected_signer ? signing_view.signing_expires_at :
+		     signing_view.expires_at) < (uint32_t)time(NULL))) {
 		result->summary = GPGME_SIGSUM_KEY_EXPIRED;
 		result->status = gl_err(GPG_ERR_CERT_EXPIRED);
 	} else if (result->exp_timestamp &&
