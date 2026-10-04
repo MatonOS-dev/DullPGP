@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=@LIBDIR@
+includedir=@INCLUDEDIR@
+
+Name: gpgme-lite
+Description: Minimal GPGME-compatible OpenPGP verification library
+Version: 2.0.1
+Libs: -L${libdir} -lgpgme-lite
+Libs.private: ${libdir}/gpgme-lite/libcrypto.a
+Cflags: -I${includedir}

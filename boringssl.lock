@@ -1,0 +1,6 @@
+# BoringSSL provenance for gpgme-lite
+repository=https://boringssl.googlesource.com/boringssl
+commit=0cd1f6a94b670e6b61af95a06e71e690ae8e3262
+source=existing AOSP external/boringssl checkout at the pinned commit; direct remote fetch failed with HTTP 500
+git-archive-sha256=d9006ffef9a1d72ac043ff1e641843c3d36e25bed9fda92c79072a228fb45eed
+license=Apache-2.0 (LICENSE at pinned commit)
