@@ -9,7 +9,8 @@ BSSL_LIBDIR=${BSSL_LIBDIR:-$SCRATCH/boringssl-build}
 CLANG=${CLANG:-/mnt/data/aosp/prebuilts/clang/host/linux-x86/clang-r596125/bin/clang}
 LLVM_BIN=${LLVM_BIN:-$(dirname "$CLANG")}
 RUNS=${RUNS:-$SCRATCH/fuzz}
-TIME_LIMIT=${TIME_LIMIT:-610}
+TIME_LIMIT=${TIME_LIMIT:-600}
+TARGETS=${TARGETS:-import verify armor}
 mkdir -p "$RUNS/corpus/import" "$RUNS/corpus/verify" "$RUNS/corpus/armor" "$RUNS/artifacts"
 export HOME="$RUNS/home"
 export GPGME_LITE_FUZZ_HOME_ROOT="$RUNS/home"
@@ -41,7 +42,7 @@ SOURCES="$ROOT/api.c $ROOT/packet.c $ROOT/key.c $ROOT/keyring.c $ROOT/verify.c"
 "$CLANG" $COMMON -I"$ROOT" -DFUZZ_VECTOR_DIR='"'"$VECTORS"'"' $SOURCES "$ROOT/tests/fuzz-verify.c" "$BSSL_LIBDIR/libcrypto.a" -pthread -o "$RUNS/fuzz-verify"
 # shellcheck disable=SC2086
 "$CLANG" $COMMON -I"$ROOT" $SOURCES "$ROOT/tests/fuzz-armor.c" "$BSSL_LIBDIR/libcrypto.a" -pthread -o "$RUNS/fuzz-armor"
-for target in import verify armor; do
+for target in $TARGETS; do
 	case "$target" in
 		import) limit=8388608 ;;
 		verify) limit=1048576 ;;
@@ -49,9 +50,19 @@ for target in import verify armor; do
 	esac
 	LLVM_PROFILE_FILE="$RUNS/$target-%p.profraw" \
 		"$RUNS/fuzz-$target" -max_total_time="$TIME_LIMIT" -max_len="$limit" \
+		-dict="$ROOT/tests/armor.dict" \
 		-print_final_stats=1 -print_coverage=1 \
 		-artifact_prefix="$RUNS/artifacts/$target-" \
 		"$RUNS/corpus/$target" 2>&1 | tee "$RUNS/$target.log"
 	"$LLVM_BIN/llvm-profdata" merge -sparse "$RUNS"/"$target"-*.profraw -o "$RUNS/$target.profdata"
 	"$LLVM_BIN/llvm-cov" report "$RUNS/fuzz-$target" -instr-profile="$RUNS/$target.profdata" > "$RUNS/$target-coverage.txt"
+	if [ "$target" = armor ]; then
+		"$LLVM_BIN/llvm-cov" report "$RUNS/fuzz-$target" \
+			-instr-profile="$RUNS/$target.profdata" --show-functions \
+			--name=gl_decode_armor \
+			"$ROOT/packet.c" > "$RUNS/armor-packet-functions-all.txt"
+		awk '/^File / || /^Name / || /^-+$/ || /^gl_decode_armor[[:space:]]/' \
+			"$RUNS/armor-packet-functions-all.txt" \
+			> "$RUNS/armor-packet-functions.txt"
+	fi
 done

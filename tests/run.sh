@@ -35,34 +35,16 @@ from pathlib import Path
 import sys
 scratch = Path(sys.argv[1])
 vectors = Path(sys.argv[2])
-sig = (vectors / "summary.sig").read_bytes()
+# summary.gpgsig is the raw first OpenPGP packet from OSTree's serialized
+# summary.sig metadata. Check it against the source artifact before use.
+serialized_sig = (vectors / "summary.sig").read_bytes()
+sig = (vectors / "summary.gpgsig").read_bytes()
 prefix = b"ostree.gpgsigs\0\0"
-if sig.startswith(prefix):
-    sig = sig[len(prefix):]
-# OSTree's metadata may include trailing fields; verify its first packet only.
-if not sig or sig[0] & 0x80 == 0:
-    raise SystemExit("invalid signature packet in summary.sig")
-if sig[0] & 0x40:
-    first = sig[1]
-    if first < 192:
-        packet_len = 2 + first
-    elif first < 224:
-        packet_len = 3 + ((first - 192) << 8) + sig[2] + 192
-    elif first == 255:
-        packet_len = 6 + int.from_bytes(sig[2:6], "big")
-    else:
-        raise SystemExit("partial signature packet is unsupported")
-else:
-    length_type = sig[0] & 3
-    if length_type == 0:
-        packet_len = 2 + sig[1]
-    elif length_type == 1:
-        packet_len = 3 + int.from_bytes(sig[1:3], "big")
-    elif length_type == 2:
-        packet_len = 5 + int.from_bytes(sig[1:5], "big")
-    else:
-        raise SystemExit("indeterminate signature packet is unsupported")
-sig = sig[:packet_len]
+if not serialized_sig.startswith(prefix):
+    raise SystemExit("summary.sig lacks OSTree gpgsigs metadata prefix")
+serialized_sig = serialized_sig[len(prefix):]
+if not sig or sig[0] & 0x80 == 0 or not serialized_sig.startswith(sig):
+    raise SystemExit("summary.gpgsig is not the raw packet from summary.sig")
 data = (vectors / "summary").read_bytes()
 changed_sig = bytearray(sig)
 changed_sig[-1] ^= 1
@@ -100,4 +82,4 @@ PY
 "$RUN/transfer" "$VECTORS" "$RUN"
 "$RUN/parser-errors"
 
-printf 'all gpgme-lite verification cases passed\n'
+printf 'all DullPGP verification cases passed\n'
