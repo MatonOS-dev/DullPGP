@@ -537,6 +537,7 @@ gpgme_error_t gpgme_op_verify(gpgme_ctx_t ctx, gpgme_data_t signature_data,
 	CBS packets;
 	struct gl_packet packet;
 	gpgme_signature_t record;
+	gpgme_signature_t *last_record;
 	gpgme_error_t error;
 
 	(void)plaintext;
@@ -559,26 +560,35 @@ gpgme_error_t gpgme_op_verify(gpgme_ctx_t ctx, gpgme_data_t signature_data,
 		signature_len = decoded_len;
 	}
 	ctx->vr = calloc(1, sizeof(*ctx->vr));
-	record = calloc(1, sizeof(*record));
-	if (!ctx->vr || !record) {
+	if (!ctx->vr) {
 		free(signature_bytes);
 		free(signed_bytes);
-		free(record);
-		gl_free_verify_result(ctx->vr);
-		ctx->vr = NULL;
 		return gl_err(GPG_ERR_ENOMEM);
 	}
-	ctx->vr->signatures = record;
+	last_record = &ctx->vr->signatures;
 	CBS_init(&packets, signature_bytes, signature_len);
-	if (!gl_next_packet(&packets, &packet) || packet.tag != 2 ||
-	    CBS_len(&packets) != 0) {
-		free(signature_bytes);
-		free(signed_bytes);
-		return gl_err(GPG_ERR_BAD_DATA);
+	/* OSTree callers may concatenate the child packets from a GVariant aay. */
+	while (CBS_len(&packets) != 0) {
+		if (!gl_next_packet(&packets, &packet) || packet.tag != 2) {
+			error = gl_err(GPG_ERR_BAD_DATA);
+			goto verify_done;
+		}
+		record = calloc(1, sizeof(*record));
+		if (!record) {
+			error = gl_err(GPG_ERR_ENOMEM);
+			goto verify_done;
+		}
+		*last_record = record;
+		last_record = &record->next;
+		error = gl_verify_signature(ctx, CBS_data(&packet.body),
+					    CBS_len(&packet.body), signed_bytes,
+					    signed_len, record);
+		if (error)
+			goto verify_done;
 	}
-	error = gl_verify_signature(ctx, CBS_data(&packet.body),
-				    CBS_len(&packet.body), signed_bytes,
-				    signed_len, record);
+	if (!ctx->vr->signatures)
+		error = gl_err(GPG_ERR_BAD_DATA);
+	verify_done:
 	free(signature_bytes);
 	free(signed_bytes);
 	return error;

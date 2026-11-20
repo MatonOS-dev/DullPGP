@@ -11,6 +11,14 @@ fetched repository artifact.
 vector generated with GnuPG. `wrong-key.gpg` is an unrelated RSA public key
 used to check key-missing handling.
 
+`flatpark-key.gpg`, `flatpark-summary.idx`, and `flatpark-idx.sig` are the
+FlatPark remote fixtures that exposed concatenated OSTree signatures. The
+signature file is the serialized `ostree.gpgsigs` `aay` value; the test
+extracts its two v4 RSA/SHA-512 packets at offsets 16 and 582, as Flatpak does
+when concatenating the child byte arrays. It checks both signatures in one
+GPGME verify operation, then flips the first signature and checks that the
+second valid signature remains in the result list.
+
 Build the library against the pinned BoringSSL checkout, then run:
 
 ```sh
@@ -20,4 +28,6 @@ BSSL_SRC=/path/to/boringssl BSSL_LIBDIR=/path/to/boringssl-build \
 
 The runner checks GOOD Flathub RSA-subkey and Ed25519 signatures, flipped
 message/signature bits, an unrelated key, SHA-1 rejection, truncated packet
-rejection, binary key export/import, and keyring persistence across contexts.
+rejection, binary key export/import, keyring persistence across contexts, and
+multiple concatenated FlatPark signatures including a bad-first/good-second
+case.

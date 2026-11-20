@@ -29,6 +29,11 @@ RUN=$(mktemp -d "$SCRATCH/run.XXXXXX")
 	$TEST_CFLAGS \
 	"$ROOT/tests/parser-errors.c" "$ROOT/libgpgme-lite.a" \
 	"$BSSL_LIBDIR/libcrypto.a" -pthread $LDFLAGS -o "$RUN/parser-errors"
+# shellcheck disable=SC2086
+"$CC" -I"$ROOT/include" -I"$BSSL_SRC/src/include" \
+	$TEST_CFLAGS \
+	"$ROOT/tests/multi-verify.c" "$ROOT/libgpgme-lite.a" \
+	"$BSSL_LIBDIR/libcrypto.a" -pthread $LDFLAGS -o "$RUN/multi-verify"
 
 python3 - "$RUN" "$VECTORS" <<'PY'
 from pathlib import Path
@@ -59,6 +64,55 @@ sha1[6] = 2
 (scratch / "signature-truncated.gpgsig").write_bytes(sig[:24])
 PY
 
+python3 - "$VECTORS/flatpark-idx.sig" "$RUN/flatpark-signatures.pgp" \
+	"$RUN/flatpark-first-bad.pgp" <<'PY'
+from pathlib import Path
+import sys
+
+serialized = Path(sys.argv[1]).read_bytes()
+prefix = b"ostree.gpgsigs\0\0"
+if not serialized.startswith(prefix):
+    raise SystemExit("FlatPark fixture lacks OSTree gpgsigs metadata prefix")
+
+# Flatpak concatenates the two ay children from the OSTree aay value before
+# handing their OpenPGP packets to OSTree's verifier. Decode the definite-size
+# old-format signature packets and leave the GVariant offset table out.
+stream = serialized[len(prefix):]
+offset = 0
+packets = []
+packet_offsets = []
+while offset < len(stream) and stream[offset] & 0x80:
+    start = offset
+    ctb = stream[offset]
+    if ctb & 0x40 or (ctb >> 2) & 0x0f != 2:
+        raise SystemExit("unexpected packet in FlatPark signature fixture")
+    length_type = ctb & 3
+    if length_type == 0:
+        header_size, length = 2, stream[offset + 1]
+    elif length_type == 1:
+        header_size = 3
+        length = int.from_bytes(stream[offset + 1:offset + 3], "big")
+    elif length_type == 2:
+        header_size = 5
+        length = int.from_bytes(stream[offset + 1:offset + 5], "big")
+    else:
+        raise SystemExit("indeterminate signature packet length")
+    end = start + header_size + length
+    if end > len(stream):
+        raise SystemExit("truncated signature packet in fixture")
+    packet_offsets.append(len(prefix) + start)
+    packets.append(stream[start:end])
+    offset = end
+if packet_offsets != [16, 582] or len(packets) != 2:
+    raise SystemExit(f"unexpected signature packet offsets: {packet_offsets}")
+
+combined = b"".join(packets)
+Path(sys.argv[2]).write_bytes(combined)
+first_bad = bytearray(combined)
+first_bad[len(packets[0]) - 1] ^= 1
+Path(sys.argv[3]).write_bytes(first_bad)
+PY
+
 "$RUN/verify-case" "$VECTORS/flathub.gpg" \
 	"$RUN/summary.gpgsig" "$VECTORS/summary" \
 	"$RUN/home-good" 0 3 0
@@ -81,5 +135,11 @@ PY
 	"$VECTORS/ed.data" "$RUN/home-ed25519" 0 3 0
 "$RUN/transfer" "$VECTORS" "$RUN"
 "$RUN/parser-errors"
+"$RUN/multi-verify" "$VECTORS/flatpark-key.gpg" \
+	"$RUN/flatpark-signatures.pgp" "$VECTORS/flatpark-summary.idx" \
+	"$RUN/home-flatpark" 2
+"$RUN/multi-verify" "$VECTORS/flatpark-key.gpg" \
+	"$RUN/flatpark-first-bad.pgp" "$VECTORS/flatpark-summary.idx" \
+	"$RUN/home-flatpark-first-bad" 1
 
 printf 'all DullPGP verification cases passed\n'
